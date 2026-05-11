@@ -1,4 +1,4 @@
 v: 4.2
-routeConfig: "YQroute.txt"
-libimobiledeviceDir: "libimobiledevice"
-imageDir: "DeveloperDiskImage"
+routeConfig: LLHroute.txt
+libimobiledeviceDir: libimobiledevice
+imageDir: DeveloperDiskImage

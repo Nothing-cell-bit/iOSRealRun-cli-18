@@ -137,27 +137,57 @@ def fixLockT(loc: list, v, dt):
             t += dt
     return fixedLoc
 
-def run1(dvt, loc: list, v, dt=0.2):
+def run1(simulator, loc: list, v, dt=0.2, stop_event=None):
     fixedLoc = fixLockT(loc, v, dt)
     nList = (5, 6, 7, 8, 9)
     n = nList[random.randint(0, len(nList)-1)]
     fixedLoc = randLoc(fixedLoc, n=n)  # a path will be divided into n parts for random route
     clock = time.time()
     for i in fixedLoc:
-        LocationSimulation(dvt).set(*bd09Towgs84(i).values())
+        if stop_event is not None and stop_event.is_set():
+            return False
+        simulator.set(*bd09Towgs84(i).values())
         while time.time()-clock < dt:
-            pass
+            if stop_event is not None and stop_event.is_set():
+                return False
+            time.sleep(0.01)
         clock = time.time()
+    return True
 
-async def run(address, port, loc: list, v, d=15):
+async def run(address, port, loc: list, v, d=15, stop_event=None):
     random.seed(time.time())
     rsd = RemoteServiceDiscoveryService((address, port))
-    await asyncio.sleep(2)
-    await rsd.connect()
-    dvt = DvtSecureSocketProxyService(rsd)
-    dvt.perform_handshake()
+    simulator = None
+    try:
+        await asyncio.sleep(2)
+        await rsd.connect()
+        dvt = DvtSecureSocketProxyService(rsd)
+        dvt.perform_handshake()
+        simulator = LocationSimulation(dvt)
 
-    while True:
-        vRand = 1000/(1000/v-(2*random.random()-1)*d)
-        run1(dvt, loc, vRand)
-        print("跑完一圈了")
+        # 每次开始运行前先锚定到路线起点，避免从上次中途位置直接跳转
+        start_point = bd09Towgs84(loc[0])
+        simulator.set(start_point["lat"], start_point["lng"])
+        await asyncio.sleep(0.2)
+
+        while stop_event is None or not stop_event.is_set():
+            vRand = 1000/(1000/v-(2*random.random()-1)*d)
+            completed = run1(simulator, loc, vRand, stop_event=stop_event)
+            if stop_event is not None and stop_event.is_set():
+                break
+            if completed:
+                print("跑完一圈了")
+    finally:
+        if simulator is not None:
+            try:
+                # 停止时先回到起点一次，再停止模拟，减少下次启动时的视觉跳点
+                start_point = bd09Towgs84(loc[0])
+                simulator.set(start_point["lat"], start_point["lng"])
+                await asyncio.sleep(0.2)
+                simulator.clear()
+            except Exception:
+                pass
+        try:
+            await rsd.close()
+        except Exception:
+            pass
