@@ -48,6 +48,7 @@ import signal
 import time
 
 # 导入原有逻辑
+from driver import connect as connect_module
 from init import init as init_module
 from init import tunnel as tunnel_module
 from init import route as route_module
@@ -77,12 +78,15 @@ class ZjuRunGUI:
         
         self.running = False
         self.loop = None
-        self.tunnel_process = None
+        self.tunnel_processes = []
         self.stop_event = None
         self.run_id = 0
+        self.current_run_mode = "dual"
+        self.mode_hint_var = tk.StringVar(value="当前模式: 双机同步运行，要求恰好连接 2 台 iPhone")
         
         self.setup_ui()
         self.setup_logging()
+        self.refresh_device_count()
 
     def setup_ui(self):
         main_frame = ttk.Frame(self.root, padding=20)
@@ -95,6 +99,22 @@ class ZjuRunGUI:
         # 配置区域
         config_frame = ttk.Labelframe(main_frame, text="运行配置", padding=10)
         config_frame.pack(fill=X, pady=10)
+
+        # 设备状态
+        status_frame = ttk.Frame(config_frame)
+        status_frame.pack(fill=X, pady=5)
+        self.device_count_var = tk.StringVar(value="当前连接设备数: 0")
+        ttk.Label(status_frame, textvariable=self.device_count_var, bootstyle=INFO).pack(side=LEFT)
+        ttk.Label(status_frame, textvariable=self.mode_hint_var, font=("", 9), bootstyle=SECONDARY).pack(side=LEFT, padx=10)
+
+        mode_frame = ttk.Frame(config_frame)
+        mode_frame.pack(fill=X, pady=5)
+        ttk.Label(mode_frame, text="运行模式:").pack(side=LEFT)
+        self.run_mode_var = tk.StringVar(value="dual")
+        self.single_mode_radio = ttk.Radiobutton(mode_frame, text="单机运行", variable=self.run_mode_var, value="single", command=self.on_mode_changed)
+        self.single_mode_radio.pack(side=LEFT, padx=10)
+        self.dual_mode_radio = ttk.Radiobutton(mode_frame, text="双机运行", variable=self.run_mode_var, value="dual", command=self.on_mode_changed)
+        self.dual_mode_radio.pack(side=LEFT, padx=10)
 
         # 速度设置
         speed_frame = ttk.Frame(config_frame)
@@ -172,18 +192,43 @@ class ZjuRunGUI:
         config.config.save()
         self.logger.info(f"已保存速度配置: {config.config.v} m/s")
 
+    def refresh_device_count(self):
+        try:
+            count = connect_module.get_connected_device_count()
+            self.device_count_var.set(f"当前连接设备数: {count}")
+        except Exception:
+            self.device_count_var.set("当前连接设备数: 检测失败")
+        self.root.after(1500, self.refresh_device_count)
+
+    def get_required_device_count(self):
+        return 1 if self.run_mode_var.get() == "single" else 2
+
+    def on_mode_changed(self):
+        required_count = self.get_required_device_count()
+        mode_text = "单机运行" if required_count == 1 else "双机同步运行"
+        self.mode_hint_var.set(f"当前模式: {mode_text}，要求恰好连接 {required_count} 台 iPhone")
+
     def start_run(self):
+        required_count = self.get_required_device_count()
+        connected_count = connect_module.get_connected_device_count()
+        if connected_count != required_count:
+            mode_text = "单机运行" if required_count == 1 else "双机同步模式"
+            self.logger.error(f"当前连接 {connected_count} 台设备，{mode_text}要求恰好连接 {required_count} 台设备")
+            return
         # 更新配置
         config.config.v = self.speed_var.get()
         config.config.routeConfig = self.route_var.get()
         config.config.save()
         
         self.run_id += 1
+        self.current_run_mode = self.run_mode_var.get()
         self.running = True
         self.stop_event = threading.Event()
         self.start_btn.configure(text="停止运行", bootstyle=DANGER)
         self.speed_entry.configure(state='disabled')
         self.route_combo.configure(state='disabled')
+        self.single_mode_radio.configure(state='disabled')
+        self.dual_mode_radio.configure(state='disabled')
         
         # 在新线程中运行 asyncio 循环
         current_run_id = self.run_id
@@ -202,39 +247,47 @@ class ZjuRunGUI:
 
     async def main_logic(self, run_id):
         try:
+            required_count = 1 if self.current_run_mode == "single" else 2
             # 1. 环境检查
-            init_module.init(stop_event=self.stop_event, interactive=False)
-            self.logger.info("环境检查通过")
+            lockdowns = init_module.init(stop_event=self.stop_event, interactive=False, expected_device_count=required_count)
+            if required_count == 1:
+                lockdowns = [lockdowns]
+            device_udids = [lockdown.udid for lockdown in lockdowns]
+            self.logger.info(f"环境检查通过，已确认 {len(device_udids)} 台设备")
 
             # 2. 建立隧道
-            self.logger.info("正在建立隧道 (可能需要几秒)...")
-            self.tunnel_process, address, port = tunnel_module.tunnel()
-            
-            if not address:
-                self.logger.error("无法建立隧道，请确保设备已连接并信任电脑")
-                self.root.after(0, self.stop_run)
+            self.logger.info(f"正在为 {required_count} 台设备建立隧道 (可能需要几秒)...")
+            self.tunnel_processes, endpoints = await tunnel_module.start_tunnels(lockdowns)
+
+            if len(endpoints) != required_count:
+                self.logger.error(f"无法为 {required_count} 台设备都建立隧道，请确保设备已连接并信任电脑")
+                self.root.after(0, lambda: self.finish_stop(run_id))
                 return
 
-            self.logger.info(f"隧道建立成功: {address}:{port}")
+            for udid, address, port in endpoints:
+                self.logger.info(f"设备 {udid[:8]}... 隧道建立成功: {address}:{port}")
 
             # 3. 获取路线
             loc = route_module.get_route()
             self.logger.info(f"成功加载路线: {config.config.routeConfig}")
 
             # 4. 开始模拟
-            self.logger.info(f"开始模拟跑步，速度: {config.config.v} m/s")
-            await run.run(address, port, loc, config.config.v, stop_event=self.stop_event)
+            if required_count == 1:
+                self.logger.info(f"开始单机跑步，速度: {config.config.v} m/s")
+            else:
+                self.logger.info(f"开始双机同步跑步，速度: {config.config.v} m/s")
+            await run.run_many(endpoints, loc, config.config.v, stop_event=self.stop_event)
             
         except SystemExit:
             self.logger.error("程序已退出 (可能是权限不足或设备未开启开发者模式)")
         except RuntimeError as e:
-            self.logger.info(str(e))
+            self.logger.info(str(e))  
         except Exception as e:
             self.logger.error(f"运行异常: {e}")
         finally:
-            if self.tunnel_process:
-                self.tunnel_process.terminate()
-                self.tunnel_process = None
+            if self.tunnel_processes:
+                await tunnel_module.stop_tunnel_processes(self.tunnel_processes)
+                self.tunnel_processes = []
             self.root.after(0, lambda: self.finish_stop(run_id))
 
     def stop_run(self):
@@ -245,7 +298,7 @@ class ZjuRunGUI:
             self.stop_event.set()
         self.start_btn.configure(text="停止中...", state='disabled')
         # 如果还没建好 tunnel，说明仍处于“等设备/等解锁”阶段，此时可以直接恢复界面
-        if self.tunnel_process is None:
+        if not self.tunnel_processes:
             self.finish_stop(self.run_id)
 
     def finish_stop(self, run_id=None):
@@ -257,6 +310,8 @@ class ZjuRunGUI:
         self.start_btn.configure(state='normal')
         self.speed_entry.configure(state='normal')
         self.route_combo.configure(state='readonly')
+        self.single_mode_radio.configure(state='normal')
+        self.dual_mode_radio.configure(state='normal')
         self.logger.info("已停止")
 
     def on_closing(self):

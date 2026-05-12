@@ -1,57 +1,89 @@
-import re
-import sys
+import asyncio
 import logging
+import re
 import subprocess
-import multiprocessing
+import sys
+import time
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-def start_tunnel(queue):
-    command = [sys.executable, '-m', 'pymobiledevice3', 'lockdown', 'start-tunnel']
+def start_tunnel_for_udid(udid, timeout=20):
+    command = [
+        sys.executable,
+        "-m",
+        "pymobiledevice3",
+        "lockdown",
+        "start-tunnel",
+        "--script-mode",
+    ]
+    if udid is not None:
+        command.extend(["--udid", udid])
 
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True
+        text=True,
+        creationflags=creationflags,
     )
 
-    logging.info("Tunnel started")
+    logging.info(f"正在为设备 {udid} 建立 tunnel")
 
-    rsd_pattern = re.compile(r"--rsd (\S+) (\d+)")
-    address, port = None, None
+    script_mode_pattern = re.compile(r"^(\S+)\s+(\d+)$")
+    deadline = time.time() + timeout
 
-    while True:
-        output = process.stdout.readline().strip()
-        if output:
-            logging.info(output)
-
-        match = rsd_pattern.search(output)
+    while time.time() < deadline:
+        output = process.stdout.readline()
+        if process.poll() is not None and not output:
+            break
+        output = output.strip()
+        if not output:
+            continue
+        logging.info(f"[{udid}] {output}")
+        match = script_mode_pattern.match(output)
         if match:
             address, port = match.group(1), int(match.group(2))
-            queue.put((address, port))
-            logging.info(f"RSD Address: {address}, RSD Port: {port}")
-            break
+            return process, address, port
 
-    process.wait()
-
-def tunnel():
-    queue = multiprocessing.Queue()
-    process = multiprocessing.Process(target=start_tunnel, args=(queue,))
-    process.start()
-    
-    try:
-        result = queue.get(timeout=20)
-        if result is None:
-            raise RuntimeError("❌ 无法建立隧道连接")
-        address, port = result
-        
-        return process, address, port
-    except Exception as e:
-        logging.error(f"❌ 隧道建立失败: {e}")
-        process.terminate()
-        process.join(timeout=2)
-        if process.is_alive():
-            process.kill()
-
+    stop_tunnel_processes_sync([process])
     return None, None, None
+
+async def start_tunnels(lockdowns, timeout=20):
+    tunnel_processes = []
+    endpoints = []
+    try:
+        for lockdown in lockdowns:
+            udid = getattr(lockdown, "udid", None)
+            process, address, port = start_tunnel_for_udid(udid, timeout=timeout)
+            if not address:
+                raise RuntimeError(f"无法为设备 {udid} 建立隧道")
+            tunnel_processes.append(process)
+            endpoints.append((udid, address, port))
+        return tunnel_processes, endpoints
+    except Exception:
+        await stop_tunnel_processes(tunnel_processes)
+        raise
+
+async def stop_tunnel_processes(processes):
+    stop_tunnel_processes_sync(processes)
+    await asyncio.sleep(0)
+
+def stop_tunnel_processes_sync(processes):
+    for process in processes:
+        if process is None:
+            continue
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+
+async def tunnel():
+    processes, endpoints = await start_tunnels([type("LockdownRef", (), {"udid": None})()], timeout=20)
+    if not endpoints:
+        return [], None, None
+    _udid, address, port = endpoints[0]
+    return processes, address, port

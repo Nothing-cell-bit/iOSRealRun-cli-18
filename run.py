@@ -137,16 +137,20 @@ def fixLockT(loc: list, v, dt):
             t += dt
     return fixedLoc
 
-def run1(simulator, loc: list, v, dt=0.2, stop_event=None):
+def build_lap_positions(loc: list, v, dt=0.2):
     fixedLoc = fixLockT(loc, v, dt)
     nList = (5, 6, 7, 8, 9)
     n = nList[random.randint(0, len(nList)-1)]
-    fixedLoc = randLoc(fixedLoc, n=n)  # a path will be divided into n parts for random route
+    return randLoc(fixedLoc, n=n)  # a path will be divided into n parts for random route
+
+def replay_positions(simulators, fixedLoc, dt=0.2, stop_event=None):
     clock = time.time()
     for i in fixedLoc:
         if stop_event is not None and stop_event.is_set():
             return False
-        simulator.set(*bd09Towgs84(i).values())
+        point = bd09Towgs84(i)
+        for simulator in simulators:
+            simulator.set(point["lat"], point["lng"])
         while time.time()-clock < dt:
             if stop_event is not None and stop_event.is_set():
                 return False
@@ -154,40 +158,71 @@ def run1(simulator, loc: list, v, dt=0.2, stop_event=None):
         clock = time.time()
     return True
 
-async def run(address, port, loc: list, v, d=15, stop_event=None):
+async def connect_simulator(endpoint, retries=3, connect_timeout=10):
+    udid, address, port = endpoint
+    last_error = None
+    for attempt in range(1, retries + 1):
+        rsd = RemoteServiceDiscoveryService((address, port))
+        try:
+            await asyncio.wait_for(rsd.connect(), timeout=connect_timeout)
+            dvt = DvtSecureSocketProxyService(rsd)
+            dvt.perform_handshake()
+            simulator = LocationSimulation(dvt)
+            print(f"设备 {str(udid)[:8]}... 定位服务连接成功")
+            return rsd, simulator
+        except Exception as exc:
+            last_error = exc
+            try:
+                await rsd.close()
+            except Exception:
+                pass
+            if attempt < retries:
+                print(f"设备 {str(udid)[:8]}... 第 {attempt} 次连接失败，正在重试: {exc}")
+                await asyncio.sleep(1)
+    raise RuntimeError(f"设备 {str(udid)[:8]}... 无法连接定位服务: {last_error}")
+
+async def run_many(endpoints, loc: list, v, d=15, stop_event=None):
     random.seed(time.time())
-    rsd = RemoteServiceDiscoveryService((address, port))
-    simulator = None
+    rsds = []
+    simulators = []
     try:
         await asyncio.sleep(2)
-        await rsd.connect()
-        dvt = DvtSecureSocketProxyService(rsd)
-        dvt.perform_handshake()
-        simulator = LocationSimulation(dvt)
+        for endpoint in endpoints:
+            rsd, simulator = await connect_simulator(endpoint)
+            rsds.append(rsd)
+            simulators.append(simulator)
 
         # 每次开始运行前先锚定到路线起点，避免从上次中途位置直接跳转
         start_point = bd09Towgs84(loc[0])
-        simulator.set(start_point["lat"], start_point["lng"])
+        for simulator in simulators:
+            simulator.set(start_point["lat"], start_point["lng"])
         await asyncio.sleep(0.2)
 
         while stop_event is None or not stop_event.is_set():
             vRand = 1000/(1000/v-(2*random.random()-1)*d)
-            completed = run1(simulator, loc, vRand, stop_event=stop_event)
+            fixedLoc = build_lap_positions(loc, vRand)
+            completed = replay_positions(simulators, fixedLoc, stop_event=stop_event)
             if stop_event is not None and stop_event.is_set():
                 break
             if completed:
                 print("跑完一圈了")
     finally:
-        if simulator is not None:
+        if simulators:
             try:
                 # 停止时先回到起点一次，再停止模拟，减少下次启动时的视觉跳点
                 start_point = bd09Towgs84(loc[0])
-                simulator.set(start_point["lat"], start_point["lng"])
+                for simulator in simulators:
+                    simulator.set(start_point["lat"], start_point["lng"])
                 await asyncio.sleep(0.2)
-                simulator.clear()
+                for simulator in simulators:
+                    simulator.clear()
             except Exception:
                 pass
-        try:
-            await rsd.close()
-        except Exception:
-            pass
+        for rsd in rsds:
+            try:
+                await rsd.close()
+            except Exception:
+                pass
+
+async def run(address, port, loc: list, v, d=15, stop_event=None):
+    await run_many([(None, address, port)], loc, v, d=d, stop_event=stop_event)
