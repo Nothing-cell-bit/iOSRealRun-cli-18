@@ -4,7 +4,7 @@ import os
 
 from driver import connect
 
-def init():
+def init(stop_event=None, interactive=True):
     # check if root on mac or Administrator on windows
     if sys.platform == "win32":
         if not ctypes.windll.shell32.IsUserAnAdmin():
@@ -19,7 +19,7 @@ def init():
         sys.exit(1)
 
     # get lockdown client
-    lockdown = connect.get_usbmux_lockdownclient()
+    lockdown = connect.get_usbmux_lockdownclient(stop_event=stop_event, interactive=interactive)
 
     # check version
     version = connect.get_version(lockdown)

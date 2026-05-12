@@ -1,4 +1,4 @@
 v: 4.2
-routeConfig: LLHroute.txt
+routeConfig: ZJGroute.txt
 libimobiledeviceDir: libimobiledevice
 imageDir: DeveloperDiskImage

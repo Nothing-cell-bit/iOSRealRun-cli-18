@@ -79,6 +79,7 @@ class ZjuRunGUI:
         self.loop = None
         self.tunnel_process = None
         self.stop_event = None
+        self.run_id = 0
         
         self.setup_ui()
         self.setup_logging()
@@ -177,6 +178,7 @@ class ZjuRunGUI:
         config.config.routeConfig = self.route_var.get()
         config.config.save()
         
+        self.run_id += 1
         self.running = True
         self.stop_event = threading.Event()
         self.start_btn.configure(text="停止运行", bootstyle=DANGER)
@@ -184,23 +186,24 @@ class ZjuRunGUI:
         self.route_combo.configure(state='disabled')
         
         # 在新线程中运行 asyncio 循环
-        self.thread = threading.Thread(target=self.run_async_logic, daemon=True)
+        current_run_id = self.run_id
+        self.thread = threading.Thread(target=self.run_async_logic, args=(current_run_id,), daemon=True)
         self.thread.start()
 
-    def run_async_logic(self):
+    def run_async_logic(self, run_id):
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         try:
-            self.loop.run_until_complete(self.main_logic())
+            self.loop.run_until_complete(self.main_logic(run_id))
         except Exception as e:
             self.logger.error(f"发生错误: {e}")
         finally:
             self.loop.close()
 
-    async def main_logic(self):
+    async def main_logic(self, run_id):
         try:
             # 1. 环境检查
-            init_module.init()
+            init_module.init(stop_event=self.stop_event, interactive=False)
             self.logger.info("环境检查通过")
 
             # 2. 建立隧道
@@ -224,13 +227,15 @@ class ZjuRunGUI:
             
         except SystemExit:
             self.logger.error("程序已退出 (可能是权限不足或设备未开启开发者模式)")
+        except RuntimeError as e:
+            self.logger.info(str(e))
         except Exception as e:
             self.logger.error(f"运行异常: {e}")
         finally:
             if self.tunnel_process:
                 self.tunnel_process.terminate()
                 self.tunnel_process = None
-            self.root.after(0, self.finish_stop)
+            self.root.after(0, lambda: self.finish_stop(run_id))
 
     def stop_run(self):
         if not self.running: return
@@ -239,8 +244,13 @@ class ZjuRunGUI:
         if self.stop_event is not None:
             self.stop_event.set()
         self.start_btn.configure(text="停止中...", state='disabled')
+        # 如果还没建好 tunnel，说明仍处于“等设备/等解锁”阶段，此时可以直接恢复界面
+        if self.tunnel_process is None:
+            self.finish_stop(self.run_id)
 
-    def finish_stop(self):
+    def finish_stop(self, run_id=None):
+        if run_id is not None and run_id != self.run_id:
+            return
         self.running = False
         self.stop_event = None
         self.start_btn.configure(text="开始运行", bootstyle=SUCCESS)
