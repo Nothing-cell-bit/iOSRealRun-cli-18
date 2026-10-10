@@ -49,9 +49,22 @@ def check_startup(executable, screenshot=None):
         process.wait(timeout=10)
 
 
+def check_cli(executable):
+    result = subprocess.run(
+        [str(executable), '--pmd3', 'lockdown', 'start-tunnel', '--help'],
+        cwd=executable.parent.parent, capture_output=True, text=True,
+        encoding='utf-8', errors='replace', timeout=45,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if result.returncode != 0 or '--script-mode' not in result.stdout:
+        raise RuntimeError(f'Frozen tunnel CLI failed: {result.stdout}\n{result.stderr}')
+    print('PASS: frozen tunnel CLI and stdout pipe')
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('executable', type=Path)
     parser.add_argument('--screenshot', type=Path)
     args = parser.parse_args()
     check_startup(args.executable.resolve(), args.screenshot)
+    check_cli(args.executable.resolve())

@@ -86,11 +86,29 @@
 ### 新增功能（相较于原项目）：
 1.gui 界面新增
 
-  Windows **以管理员身份** 打开终端，进入项目目录，执行
-  python gui.py
+  Windows **以管理员身份** 打开终端，进入项目目录。首次运行时创建虚拟环境并安装依赖：
+  ```powershell
+  py -3.11 -m venv .venv
+  .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+  ```
+  之后使用虚拟环境中的 Python 启动：
+  ```powershell
+  .\.venv\Scripts\python.exe gui.py
+  ```
   即可打开图形化界面
   在图形化界面中选择跑步路径和速度后点击  **开始运行** 即可启动跑步
   跑完后要先点击  **停止运行** 再关闭界面
+
+  **Windows EXE：** 将 `ZjuRun.exe`、`config.yaml` 和路线文件放在同一目录。
+  右键 `ZjuRun.exe`，选择 **以管理员身份运行**；配置和路线从 EXE 所在目录读取。
+
+  从源码重新打包（使用 Python 3.11 虚拟环境）：
+  ```powershell
+  .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+  .\build_exe.ps1
+  ```
+  生成的程序和配置文件在 `dist` 目录。打包配置包含 `readchar` 的版本元数据，
+  并保留隧道子进程所需的标准输出管道。
 
 2.双机模式
 

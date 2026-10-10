@@ -2,6 +2,15 @@ import multiprocessing
 import sys
 import os
 
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    # The frozen EXE also runs the tunnel CLI, without creating another GUI.
+    if len(sys.argv) > 1 and sys.argv[1] == "--pmd3":
+        sys.argv.pop(1)
+        from pymobiledevice3.__main__ import main
+        main()
+        sys.exit(0)
+
 # 修复 PyInstaller --windowed 模式下 stdin/stdout/stderr 为 None 的问题
 # 必须在导入任何第三方库（特别是 blessed/inquirer3）之前执行
 # 这是一个更彻底的 monkey patch，直接在最顶层执行
@@ -134,7 +143,7 @@ class ZjuRunGUI:
         self.route_var = tk.StringVar(value=config.config.routeConfig)
         
         # 获取目录下所有 txt 文件作为路线候选
-        routes = [f for f in os.listdir('.') if f.endswith('route.txt')]
+        routes = sorted(path.name for path in config.config.directory.glob('*route.txt'))
         if not routes: routes = ["ZJGroute.txt", "YQroute.txt", "HNroute.txt"]
         
         self.route_combo = ttk.Combobox(route_frame, textvariable=self.route_var, values=routes, state="readonly")
@@ -329,8 +338,6 @@ class ZjuRunGUI:
             self.root.destroy()
 
 if __name__ == "__main__":
-    multiprocessing.freeze_support() # 为 PyInstaller 打包做准备
-    
     root = ttk.Window(themename="cosmo")
     gui = ZjuRunGUI(root)
     root.protocol("WM_DELETE_WINDOW", gui.on_closing)

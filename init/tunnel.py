@@ -8,14 +8,16 @@ import time
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 def start_tunnel_for_udid(udid, timeout=20):
-    command = [
-        sys.executable,
-        "-m",
-        "pymobiledevice3",
+    command = [sys.executable]
+    if getattr(sys, "frozen", False):
+        command.append("--pmd3")
+    else:
+        command.extend(["-m", "pymobiledevice3"])
+    command.extend([
         "lockdown",
         "start-tunnel",
         "--script-mode",
-    ]
+    ])
     if udid is not None:
         command.extend(["--udid", udid])
 
@@ -26,6 +28,7 @@ def start_tunnel_for_udid(udid, timeout=20):
         stderr=subprocess.STDOUT,
         text=True,
         creationflags=creationflags,
+        stdin=subprocess.DEVNULL,
     )
 
     logging.info(f"正在为设备 {udid} 建立 tunnel")

@@ -1,9 +1,15 @@
 import yaml
 from pathlib import Path
+import sys
 
 class Config:
     def __init__(self):
-        self._config_path = Path(__file__).resolve().with_name("config.yaml")
+        self.directory = (
+            Path(sys.executable).resolve().parent
+            if getattr(sys, "frozen", False)
+            else Path(__file__).resolve().parent
+        )
+        self._config_path = self.directory / "config.yaml"
         with self._config_path.open("r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
         for i in config:
